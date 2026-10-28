@@ -1,26 +1,38 @@
 /*
-  Two servo-tester inputs -> two motors, with fault detection and status LED
+  Servo-tester inputs -> two motors, with fault detection and status LED
   STM8S003F3U6 20A DC Controller (sduino / SDCC)
   No serial output (the board has no free serial port).
 
-  Input 1 (J3, PA1) -> Motor 1 (H3/H4): A = PC6 (U2), B = PD4 (U3)
-  Input 2 (J4, PA2) -> Motor 2 (H5/H6): A = PC7 (U4), B = PA3 (U5)
+  Motor 1 (H3/H4): A = PC6 (U2), B = PD4 (U3)
+  Motor 2 (H5/H6): A = PC7 (U4), B = PA3 (U5)
+
+  MIX_MODE 0 (normal): Input 1 (J3, PA1) -> Motor 1, Input 2 (J4, PA2) -> Motor 2
+  MIX_MODE 1 (mix):    Input 1 = throttle, Input 2 = steering (optional)
+                         left  = throttle + steering
+                         right = throttle - steering
+                       With steering centred or not connected, the single
+                       throttle drives both motors together.
 
   Each input is a servo pulse (1000-2000 us, ~50 Hz):
     above 1550 us = forward, below 1450 us = reverse, between = stop.
-  An input with no valid pulse stops its own motor.
-  INH (PC3) is switched off only when BOTH inputs have no valid pulse.
+  No valid pulse stops the motor(s). In mix mode, no valid throttle stops both.
+  INH (PC3) is switched off when no valid command is present.
 
-  PWM is on the B pins (PD4, PA3), the default timer-2 PWM pins.
-
-  LED D2 (PC5):
-    slow blink (1000 ms on / 1000 ms off) = OK
-    fast blink (100 ms on / 100 ms off) = fault
+  LED D2 (PC5): slow blink = OK, fast blink = fault
 */
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <Arduino.h>
+
+// ---- Mode selection ----
+// 0 = normal (two independent inputs), 1 = mix mode
+#define MIX_MODE          1
+// In mix mode: 1 = read input 2 as steering, 0 = throttle only (input 2 is ignored
+// and never read, which keeps the loop fast when nothing is connected to J4)
+#define MIX_USE_STEERING  1
+// Flip if the robot turns the wrong way when steering right
+#define MIX_STEER_INVERT  0
 
 // ---- Inputs ----
 #define SERVO_IN_1   PA1
@@ -41,23 +53,20 @@
 #define IS4_PIN      PD6   // U5
 #define VSENSE_PIN   PD5   // Voltage_Sense
 
-// Serial is not used, so PD6 is free and the IS4 check can run.
 #define ENABLE_IS4_CHECK     1
 
-// Voltage check: leave at 0 until R16 and R18 are swapped on the board.
-// As drawn, the divider puts about 81% of VCC on PD5, which can damage the pin.
+// Leave at 0 until R16 and R18 are swapped on the board.
 #define ENABLE_VSENSE_CHECK  0
 
 // 1 = switch the drivers off while a fault is active.
-// Leave at 0 until IS_FAULT_COUNTS is calibrated, or false faults will stop the motors.
 #define FAULT_SHUTDOWN       0
 
 // ---- Fault thresholds ----
 #define IS_FAULT_COUNTS   600
 #define VCC_MIN_V         9.0f
 #define VCC_MAX_V         18.0f
-#define DIVIDER_RATIO     0.1887f   // 43K top, 10K bottom (after the swap)
-#define FAULT_CONFIRM     3         // consecutive bad loops before a fault is declared
+#define DIVIDER_RATIO     0.1887f
+#define FAULT_CONFIRM     3
 
 // ---- Servo pulse settings (microseconds) ----
 #define PULSE_MIN_US     1000UL
@@ -100,13 +109,13 @@ unsigned long readServoPulse(uint8_t pin)
     return micros() - rise;
 }
 
-// Turns a pulse width into direction and speed. Returns true if the pulse is valid.
-bool decodeServo(unsigned long p, int8_t *dir, uint8_t *speed)
+// Turns a pulse width into a signed command, -255 (full reverse) to +255 (full forward).
+// Returns true if the pulse is valid. Invalid pulses give 0.
+bool decodeServoSigned(unsigned long p, int16_t *val)
 {
     unsigned long s;
 
-    *dir = 0;
-    *speed = 0;
+    *val = 0;
 
     if (p < VALID_MIN_US || p > VALID_MAX_US)
         return false;
@@ -116,19 +125,28 @@ bool decodeServo(unsigned long p, int8_t *dir, uint8_t *speed)
         s = ((p - (NEUTRAL_US + DEADBAND_US)) * 255UL)
             / (PULSE_MAX_US - (NEUTRAL_US + DEADBAND_US));
         if (s > 255UL) s = 255UL;
-        *dir = 1;
-        *speed = (uint8_t)s;
+        *val = (int16_t)s;
     }
     else if (p < NEUTRAL_US - DEADBAND_US)
     {
         s = (((NEUTRAL_US - DEADBAND_US) - p) * 255UL)
             / ((NEUTRAL_US - DEADBAND_US) - PULSE_MIN_US);
         if (s > 255UL) s = 255UL;
-        *dir = -1;
-        *speed = (uint8_t)s;
+        *val = -(int16_t)s;
     }
 
     return true;
+}
+
+// Splits a signed command (-255..255) into direction and speed.
+void splitSigned(int16_t v, int8_t *dir, uint8_t *speed)
+{
+    if (v > 255)  v = 255;
+    if (v < -255) v = -255;
+
+    if (v > 0)      { *dir = 1;  *speed = (uint8_t)v; }
+    else if (v < 0) { *dir = -1; *speed = (uint8_t)(-v); }
+    else            { *dir = 0;  *speed = 0; }
 }
 
 // Drives one motor. dir: +1 forward, -1 reverse, 0 stop (brake). speed: 0-255.
@@ -172,7 +190,6 @@ bool checkFault(void)
     return false;
 }
 
-// Toggles the LED every BLINK_NORMAL_MS, or every BLINK_FAULT_MS during a fault.
 void updateLed(void)
 {
     unsigned long interval = faultActive ? BLINK_FAULT_MS : BLINK_NORMAL_MS;
@@ -196,7 +213,7 @@ void setup(void)
     pinMode(M2_B, OUTPUT);
     pinMode(LED_PIN, OUTPUT);
 
-    digitalWrite(INH_PIN, LOW);      // drivers off while pins are set up
+    digitalWrite(INH_PIN, LOW);
     driveMotor(M1_A, M1_B, 0, 0);
     driveMotor(M2_A, M2_B, 0, 0);
 }
@@ -204,13 +221,56 @@ void setup(void)
 void loop(void)
 {
     bool valid1, valid2, driversOn;
+    int16_t v1, v2;
 
-    // ---- Read both servo inputs ----
+    // ---- Read servo inputs ----
     pulse1 = readServoPulse(SERVO_IN_1);
-    pulse2 = readServoPulse(SERVO_IN_2);
+    valid1 = decodeServoSigned(pulse1, &v1);
 
-    valid1 = decodeServo(pulse1, &dir1, &speed1);
-    valid2 = decodeServo(pulse2, &dir2, &speed2);
+#if MIX_MODE
+    {
+        int16_t throttle = v1;
+        int16_t steer = 0;
+        int16_t left, right;
+
+  #if MIX_USE_STEERING
+        pulse2 = readServoPulse(SERVO_IN_2);
+        decodeServoSigned(pulse2, &steer);   // missing/invalid steering = 0 (straight)
+    #if MIX_STEER_INVERT
+        steer = -steer;
+    #endif
+  #endif
+
+        // Without a valid throttle, both motors stop (failsafe).
+        if (!valid1)
+        {
+            throttle = 0;
+            steer = 0;
+        }
+
+        left  = throttle + steer;
+        right = throttle - steer;
+
+        // Clamp to the output range
+        if (left > 255)   left = 255;
+        if (left < -255)  left = -255;
+        if (right > 255)  right = 255;
+        if (right < -255) right = -255;
+
+        splitSigned(left,  &dir1, &speed1);   // Motor 1 = left
+        splitSigned(right, &dir2, &speed2);   // Motor 2 = right
+
+        driversOn = valid1;
+    }
+#else
+    pulse2 = readServoPulse(SERVO_IN_2);
+    valid2 = decodeServoSigned(pulse2, &v2);
+
+    splitSigned(v1, &dir1, &speed1);
+    splitSigned(v2, &dir2, &speed2);
+
+    driversOn = (valid1 || valid2);
+#endif
 
     // ---- Fault detection with debounce ----
     if (checkFault())
@@ -225,9 +285,6 @@ void loop(void)
 
     faultActive = (badCount >= FAULT_CONFIRM);
 
-    // ---- Apply to both motors ----
-    driversOn = (valid1 || valid2);
-
 #if FAULT_SHUTDOWN
     if (faultActive)
     {
@@ -237,10 +294,10 @@ void loop(void)
     }
 #endif
 
+    // ---- Apply to both motors ----
     driveMotor(M1_A, M1_B, dir1, speed1);
     driveMotor(M2_A, M2_B, dir2, speed2);
     digitalWrite(INH_PIN, driversOn ? HIGH : LOW);
 
-    // ---- Status LED ----
     updateLed();
 }
