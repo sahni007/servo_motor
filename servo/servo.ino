@@ -217,7 +217,7 @@ void setup(void)
     driveMotor(M1_A, M1_B, 0, 0);
     driveMotor(M2_A, M2_B, 0, 0);
 }
-
+#if 0
 void loop(void)
 {
     bool valid1, valid2, driversOn;
@@ -301,3 +301,96 @@ void loop(void)
 
     updateLed();
 }
+
+#else
+void loop(void)
+{
+    bool valid1, valid2, driversOn;
+    int16_t throttle = 0;
+    int16_t steer = 0;
+    int16_t left, right;
+
+    // -------- Read Channel 1: THROTTLE (PA1) --------
+    pulse1 = readServoPulse(SERVO_IN_1);
+    valid1 = decodeServoSigned(pulse1, &throttle);
+
+    // -------- Read Channel 2: STEERING (PA2) --------
+    pulse2 = readServoPulse(SERVO_IN_2);
+    valid2 = decodeServoSigned(pulse2, &steer);
+
+    // Optional steering reversal
+#if MIX_STEER_INVERT
+    steer = -steer;
+#endif
+
+    // -------- Fail-safe --------
+    // Invalid throttle: stop both motors.
+    if (!valid1)
+    {
+        throttle = 0;
+        steer = 0;
+    }
+
+    // Invalid steering: continue straight using throttle only.
+    if (!valid2)
+    {
+        steer = 0;
+    }
+
+    // -------- Mix throttle and steering --------
+    // Motor 1 = left motor
+    // Motor 2 = right motor
+    left  = throttle + steer;
+    right = throttle - steer;
+
+    // Limit commands to -255 ... +255
+    if (left > 255)   left = 255;
+    if (left < -255)  left = -255;
+
+    if (right > 255)  right = 255;
+    if (right < -255) right = -255;
+
+    // Convert commands to direction and speed
+    splitSigned(left,  &dir1, &speed1);
+    splitSigned(right, &dir2, &speed2);
+
+    // -------- Fault detection --------
+    if (checkFault())
+    {
+        if (badCount < FAULT_CONFIRM)
+            badCount++;
+    }
+    else
+    {
+        badCount = 0;
+    }
+
+    faultActive = (badCount >= FAULT_CONFIRM);
+
+#if FAULT_SHUTDOWN
+    if (faultActive)
+    {
+        dir1 = 0;
+        speed1 = 0;
+        dir2 = 0;
+        speed2 = 0;
+    }
+#endif
+
+    // -------- Drive both motors --------
+    driveMotor(M1_A, M1_B, dir1, speed1);
+    driveMotor(M2_A, M2_B, dir2, speed2);
+
+    // Enable drivers only when throttle is valid
+    driversOn = valid1;
+
+#if FAULT_SHUTDOWN
+    if (faultActive)
+        driversOn = false;
+#endif
+
+    digitalWrite(INH_PIN, driversOn ? HIGH : LOW);
+
+    updateLed();
+}
+#endif
