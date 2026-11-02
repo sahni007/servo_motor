@@ -91,6 +91,20 @@ uint8_t badCount = 0;
 bool faultActive = false;
 unsigned long lastBlink = 0;
 
+// -------- Steering debug (temporary) --------
+// Set DEBUG_STEER_LED to 1 to use the status LED to visually confirm the
+// decoded steering value, bypassing the normal fault-blink behaviour:
+//   LED solid ON   -> steer > +40 (stick held right)
+//   LED solid OFF  -> steer < -40 (stick held left)
+//   LED blinking   -> steer centered (-40..+40) OR channel invalid/timed out
+// Move the steering stick fully left/right and watch the LED. If it never
+// goes solid ON/OFF, the steering channel (PA2) isn't producing a valid,
+// swinging pulse (wiring / receiver channel / endpoint travel problem).
+// Set back to 0 to restore normal fault-blink LED behaviour.
+#define DEBUG_STEER_LED       1
+#define DEBUG_STEER_THRESHOLD 40
+volatile int16_t gSteerDebug = 0;
+
 int8_t dir1 = 0;
 int8_t dir2 = 0;
 uint8_t speed1 = 0;
@@ -267,6 +281,18 @@ void updateLed(void)
 {
     unsigned long interval;
 
+#if DEBUG_STEER_LED
+    if (gSteerDebug > DEBUG_STEER_THRESHOLD) {
+        digitalWrite(LED_PIN, HIGH);   // steering RIGHT -> solid ON
+        return;
+    }
+    if (gSteerDebug < -DEBUG_STEER_THRESHOLD) {
+        digitalWrite(LED_PIN, LOW);    // steering LEFT -> solid OFF
+        return;
+    }
+    // centered or invalid -> fall through to normal blink below
+#endif
+
     if (faultActive) {
         interval = BLINK_FAULT_MS;
     }
@@ -364,6 +390,13 @@ void loop(void)
     if (valid2) {
         valid2 = decodeServoSigned(p2, &steer);
     }
+
+#if DEBUG_STEER_LED
+    // Capture the raw decoded steering value (0 if channel invalid/timed
+    // out) for the LED diagnostic, before any mixing/invalidation logic
+    // below can alter it.
+    gSteerDebug = valid2 ? steer : 0;
+#endif
 
 #if !MIX_USE_STEERING
     steer = 0;
