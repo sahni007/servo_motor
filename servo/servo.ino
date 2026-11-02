@@ -1,7 +1,8 @@
 
 /*
   STM8S003F3U6 - Dual Motor Controller
-  Non-blocking RC PWM input capture
+  Interrupt-based RC PWM input capture (PA1/PA2 share Port A EXTI,
+  serviced by throttleISR()/steeringISR() attached in setup())
   Compatible approach for Sduino / SDCC
   No serial output
 
@@ -73,18 +74,19 @@
 #define BLINK_FAULT_MS       100UL
 
 // -------- Input state: throttle --------
-uint8_t throttlePreviousLevel = LOW;
-unsigned long throttleRiseTime = 0;
-unsigned long throttlePulseWidth = 0;
-unsigned long throttleLastUpdate = 0;
-bool throttleHavePulse = false;
+// volatile: written inside the ISR (updateServoInputISR), read in loop()
+volatile uint8_t throttlePreviousLevel = LOW;
+volatile unsigned long throttleRiseTime = 0;
+volatile unsigned long throttlePulseWidth = 0;
+volatile unsigned long throttleLastUpdate = 0;
+volatile bool throttleHavePulse = false;
 
 // -------- Input state: steering --------
-uint8_t steeringPreviousLevel = LOW;
-unsigned long steeringRiseTime = 0;
-unsigned long steeringPulseWidth = 0;
-unsigned long steeringLastUpdate = 0;
-bool steeringHavePulse = false;
+volatile uint8_t steeringPreviousLevel = LOW;
+volatile unsigned long steeringRiseTime = 0;
+volatile unsigned long steeringPulseWidth = 0;
+volatile unsigned long steeringLastUpdate = 0;
+volatile bool steeringHavePulse = false;
 
 // -------- Runtime state --------
 uint8_t badCount = 0;
@@ -110,14 +112,28 @@ int8_t dir2 = 0;
 uint8_t speed1 = 0;
 uint8_t speed2 = 0;
 
-// -------- Non-blocking input capture --------
+// -------- Non-blocking input capture (interrupt-based) --------
+// NOTE on porting from polling to interrupts:
+// STM8 EXTI hardware triggers per PORT, not per individual pin - both
+// PA1 (throttle) and PA2 (steering) live on Port A, so a single Port-A
+// "pin change" interrupt services both channels. Each ISR below only
+// touches ITS OWN channel's volatile state variables (exactly like the
+// old updateServoInput() calls did), so there is no conflict between them
+// even though both can be triggered by the same underlying port event.
+//
+// IMPORTANT: attachInterrupt()/CHANGE support depends on the specific
+// Arduino-STM8 core (Sduino/SDCC) in use. If this core does not support
+// attachInterrupt(pin, isr, CHANGE) on arbitrary GPIO pins, this will need
+// to be replaced with the core's native EXTI/port-interrupt API instead
+// (e.g. a manually written __interrupt ISR tied to the Port A vector).
+// Verify this compiles against your actual toolchain before relying on it.
 void updateServoInput(
     uint8_t pin,
-    uint8_t *previousLevel,
-    unsigned long *riseTime,
-    unsigned long *pulseWidth,
-    unsigned long *lastUpdate,
-    bool *havePulse,
+    volatile uint8_t *previousLevel,
+    volatile unsigned long *riseTime,
+    volatile unsigned long *pulseWidth,
+    volatile unsigned long *lastUpdate,
+    volatile bool *havePulse,
     unsigned long now)
 {
     uint8_t level = digitalRead(pin);
@@ -139,6 +155,40 @@ void updateServoInput(
 
     *previousLevel = level;
 }
+
+// ISR for the throttle channel (PA1). Called by the core whenever PA1
+// changes level. Keep this as short/fast as possible - just capture the
+// timestamp and run the same edge logic as before.
+void throttleISR(void)
+{
+    unsigned long now = micros();
+
+    updateServoInput(
+        SERVO_IN_1,
+        &throttlePreviousLevel,
+        &throttleRiseTime,
+        &throttlePulseWidth,
+        &throttleLastUpdate,
+        &throttleHavePulse,
+        now);
+}
+
+// ISR for the steering channel (PA2). Called by the core whenever PA2
+// changes level.
+void steeringISR(void)
+{
+    unsigned long now = micros();
+
+    updateServoInput(
+        SERVO_IN_2,
+        &steeringPreviousLevel,
+        &steeringRiseTime,
+        &steeringPulseWidth,
+        &steeringLastUpdate,
+        &steeringHavePulse,
+        now);
+}
+
 
 bool getServoPulse(
     bool havePulse,
@@ -328,6 +378,16 @@ void setup(void)
     // Initialize current input levels.
     throttlePreviousLevel = digitalRead(SERVO_IN_1);
     steeringPreviousLevel = digitalRead(SERVO_IN_2);
+
+    // Attach interrupt-based capture (replaces polling in loop()).
+    // CHANGE = fire on both rising and falling edges, required since we
+    // need to timestamp both the start and end of each pulse.
+    // NOTE: verify your specific Sduino/SDCC core actually supports
+    // attachInterrupt() with CHANGE mode on PA1/PA2. If not supported,
+    // this needs to be replaced with the core's native EXTI/port
+    // interrupt registration API instead.
+    attachInterrupt(SERVO_IN_1, throttleISR, CHANGE);
+    attachInterrupt(SERVO_IN_2, steeringISR, CHANGE);
 }
 
 // -------- Main loop --------
@@ -346,27 +406,9 @@ void loop(void)
     unsigned long p1 = 0;
     unsigned long p2 = 0;
 
-    // Capture both RC inputs without waiting for edges.
-    now = micros();
-
-    updateServoInput(
-        SERVO_IN_1,
-        &throttlePreviousLevel,
-        &throttleRiseTime,
-        &throttlePulseWidth,
-        &throttleLastUpdate,
-        &throttleHavePulse,
-        now);
-
-    updateServoInput(
-        SERVO_IN_2,
-        &steeringPreviousLevel,
-        &steeringRiseTime,
-        &steeringPulseWidth,
-        &steeringLastUpdate,
-        &steeringHavePulse,
-        now);
-
+    // Pulse capture now happens asynchronously via throttleISR()/steeringISR()
+    // (attached in setup()), triggered by hardware on every PA1/PA2 edge.
+    // loop() just reads the latest captured values below - no polling needed.
     now = micros();
 
     valid1 = getServoPulse(
@@ -486,3 +528,4 @@ void loop(void)
 
     updateLed();
 }
+
