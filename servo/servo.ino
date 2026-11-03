@@ -1,8 +1,7 @@
 
 /*
   STM8S003F3U6 - Dual Motor Controller
-  Interrupt-based RC PWM input capture (PA1/PA2 share Port A EXTI,
-  serviced by throttleISR()/steeringISR() attached in setup())
+  Non-blocking RC PWM input capture (polling-based)
   Compatible approach for Sduino / SDCC
   No serial output
 
@@ -74,24 +73,39 @@
 #define BLINK_FAULT_MS       100UL
 
 // -------- Input state: throttle --------
-// volatile: written inside the ISR (updateServoInputISR), read in loop()
-volatile uint8_t throttlePreviousLevel = LOW;
-volatile unsigned long throttleRiseTime = 0;
-volatile unsigned long throttlePulseWidth = 0;
-volatile unsigned long throttleLastUpdate = 0;
-volatile bool throttleHavePulse = false;
+uint8_t throttlePreviousLevel = LOW;
+unsigned long throttleRiseTime = 0;
+unsigned long throttlePulseWidth = 0;
+unsigned long throttleLastUpdate = 0;
+bool throttleHavePulse = false;
 
 // -------- Input state: steering --------
-volatile uint8_t steeringPreviousLevel = LOW;
-volatile unsigned long steeringRiseTime = 0;
-volatile unsigned long steeringPulseWidth = 0;
-volatile unsigned long steeringLastUpdate = 0;
-volatile bool steeringHavePulse = false;
+uint8_t steeringPreviousLevel = LOW;
+unsigned long steeringRiseTime = 0;
+unsigned long steeringPulseWidth = 0;
+unsigned long steeringLastUpdate = 0;
+bool steeringHavePulse = false;
 
 // -------- Runtime state --------
 uint8_t badCount = 0;
 bool faultActive = false;
 unsigned long lastBlink = 0;
+unsigned long lastFaultCheck = 0;
+bool lastFaultResult = false;
+
+// -------- Input-glitch debounce --------
+// A single corrupted pulse-width reading (e.g. an input edge briefly missed
+// due to loop() being delayed by analogRead() calls in checkFault()) makes
+// that one frame look "invalid", which immediately zeroes dir/speed. Since
+// dir=0 hard-brakes the motor (both terminals pulled LOW), a transient
+// single-frame invalid reading causes a visible brake-then-run jolt. These
+// counters require a few consecutive invalid frames before actually
+// treating the channel as lost; a lone bad frame just reuses last good data.
+#define VALID_GLITCH_CONFIRM  3
+uint8_t throttleBadFrames = 0;
+uint8_t steeringBadFrames = 0;
+int16_t gThrottleLastGood = 0;
+int16_t gSteerLastGood = 0;
 
 // -------- Steering debug (temporary) --------
 // Set DEBUG_STEER_LED to 1 to use the status LED to visually confirm the
@@ -107,33 +121,31 @@ unsigned long lastBlink = 0;
 #define DEBUG_STEER_THRESHOLD 40
 volatile int16_t gSteerDebug = 0;
 
+// -------- Loop-rate measurement (temporary) --------
+// Set DEBUG_LOOP_TOGGLE to 1 to toggle LED_PIN once per loop() iteration,
+// turning the loop rate into a square wave you can measure with a scope
+// or frequency-capable multimeter. Mutually exclusive with DEBUG_STEER_LED.
+#define DEBUG_LOOP_TOGGLE     0
+
 int8_t dir1 = 0;
 int8_t dir2 = 0;
 uint8_t speed1 = 0;
 uint8_t speed2 = 0;
 
-// -------- Non-blocking input capture (interrupt-based) --------
-// NOTE on porting from polling to interrupts:
-// STM8 EXTI hardware triggers per PORT, not per individual pin - both
-// PA1 (throttle) and PA2 (steering) live on Port A, so a single Port-A
-// "pin change" interrupt services both channels. Each ISR below only
-// touches ITS OWN channel's volatile state variables (exactly like the
-// old updateServoInput() calls did), so there is no conflict between them
-// even though both can be triggered by the same underlying port event.
-//
-// IMPORTANT: attachInterrupt()/CHANGE support depends on the specific
-// Arduino-STM8 core (Sduino/SDCC) in use. If this core does not support
-// attachInterrupt(pin, isr, CHANGE) on arbitrary GPIO pins, this will need
-// to be replaced with the core's native EXTI/port-interrupt API instead
-// (e.g. a manually written __interrupt ISR tied to the Port A vector).
-// Verify this compiles against your actual toolchain before relying on it.
+// -------- Non-blocking input capture (polling) --------
+// NOTE: an interrupt-based version was tried (attachInterrupt + ISRs) but
+// resulted in total failure (no motor movement at all) on this specific
+// Sduino/SDCC toolchain - most likely attachInterrupt()/CHANGE is not
+// properly supported on arbitrary GPIO pins (PA1/PA2) by this core, or
+// the port-shared EXTI dispatch didn't correctly call both registered
+// callbacks. Reverted to the proven-working polling approach below.
 void updateServoInput(
     uint8_t pin,
-    volatile uint8_t *previousLevel,
-    volatile unsigned long *riseTime,
-    volatile unsigned long *pulseWidth,
-    volatile unsigned long *lastUpdate,
-    volatile bool *havePulse,
+    uint8_t *previousLevel,
+    unsigned long *riseTime,
+    unsigned long *pulseWidth,
+    unsigned long *lastUpdate,
+    bool *havePulse,
     unsigned long now)
 {
     uint8_t level = digitalRead(pin);
@@ -154,39 +166,6 @@ void updateServoInput(
     }
 
     *previousLevel = level;
-}
-
-// ISR for the throttle channel (PA1). Called by the core whenever PA1
-// changes level. Keep this as short/fast as possible - just capture the
-// timestamp and run the same edge logic as before.
-void throttleISR(void)
-{
-    unsigned long now = micros();
-
-    updateServoInput(
-        SERVO_IN_1,
-        &throttlePreviousLevel,
-        &throttleRiseTime,
-        &throttlePulseWidth,
-        &throttleLastUpdate,
-        &throttleHavePulse,
-        now);
-}
-
-// ISR for the steering channel (PA2). Called by the core whenever PA2
-// changes level.
-void steeringISR(void)
-{
-    unsigned long now = micros();
-
-    updateServoInput(
-        SERVO_IN_2,
-        &steeringPreviousLevel,
-        &steeringRiseTime,
-        &steeringPulseWidth,
-        &steeringLastUpdate,
-        &steeringHavePulse,
-        now);
 }
 
 
@@ -378,16 +357,6 @@ void setup(void)
     // Initialize current input levels.
     throttlePreviousLevel = digitalRead(SERVO_IN_1);
     steeringPreviousLevel = digitalRead(SERVO_IN_2);
-
-    // Attach interrupt-based capture (replaces polling in loop()).
-    // CHANGE = fire on both rising and falling edges, required since we
-    // need to timestamp both the start and end of each pulse.
-    // NOTE: verify your specific Sduino/SDCC core actually supports
-    // attachInterrupt() with CHANGE mode on PA1/PA2. If not supported,
-    // this needs to be replaced with the core's native EXTI/port
-    // interrupt registration API instead.
-    attachInterrupt(SERVO_IN_1, throttleISR, CHANGE);
-    attachInterrupt(SERVO_IN_2, steeringISR, CHANGE);
 }
 
 // -------- Main loop --------
@@ -406,9 +375,27 @@ void loop(void)
     unsigned long p1 = 0;
     unsigned long p2 = 0;
 
-    // Pulse capture now happens asynchronously via throttleISR()/steeringISR()
-    // (attached in setup()), triggered by hardware on every PA1/PA2 edge.
-    // loop() just reads the latest captured values below - no polling needed.
+    // Capture both RC inputs without waiting for edges.
+    now = micros();
+
+    updateServoInput(
+        SERVO_IN_1,
+        &throttlePreviousLevel,
+        &throttleRiseTime,
+        &throttlePulseWidth,
+        &throttleLastUpdate,
+        &throttleHavePulse,
+        now);
+
+    updateServoInput(
+        SERVO_IN_2,
+        &steeringPreviousLevel,
+        &steeringRiseTime,
+        &steeringPulseWidth,
+        &steeringLastUpdate,
+        &steeringHavePulse,
+        now);
+
     now = micros();
 
     valid1 = getServoPulse(
@@ -431,6 +418,30 @@ void loop(void)
 
     if (valid2) {
         valid2 = decodeServoSigned(p2, &steer);
+    }
+
+    // Debounce transient single-frame invalid readings (glitches) so they
+    // don't instantly hard-brake the motors. Only treat a channel as truly
+    // lost after several consecutive bad frames; a lone bad frame reuses
+    // the last decoded value and is still treated as valid for this pass.
+    if (valid1) {
+        throttleBadFrames = 0;
+        gThrottleLastGood = throttle;
+    }
+    else if (throttleBadFrames < VALID_GLITCH_CONFIRM) {
+        throttleBadFrames++;
+        throttle = gThrottleLastGood;
+        valid1 = true;
+    }
+
+    if (valid2) {
+        steeringBadFrames = 0;
+        gSteerLastGood = steer;
+    }
+    else if (steeringBadFrames < VALID_GLITCH_CONFIRM) {
+        steeringBadFrames++;
+        steer = gSteerLastGood;
+        valid2 = true;
     }
 
 #if DEBUG_STEER_LED
@@ -500,7 +511,17 @@ void loop(void)
 #endif
 
     // Fault detection and confirmation.
-    if (checkFault()) {
+    // Only run the analogRead()-based fault check periodically (not every
+    // loop pass) - analogRead() blocks for the ADC conversion time, and
+    // running it every single iteration increases the chance of delaying
+    // loop() long enough to miss/corrupt an RC input edge, which was
+    // causing the motors to momentarily hard-brake (dir=0) and feel jerky.
+    if ((unsigned long)(millis() - lastFaultCheck) >= 10UL) {
+        lastFaultCheck = millis();
+        lastFaultResult = checkFault();
+    }
+
+    if (lastFaultResult) {
         if (badCount < FAULT_CONFIRM) {
             badCount++;
         }
@@ -526,6 +547,10 @@ void loop(void)
 
     digitalWrite(INH_PIN, driversOn ? HIGH : LOW);
 
+#if DEBUG_LOOP_TOGGLE
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+#else
     updateLed();
+#endif
 }
 
