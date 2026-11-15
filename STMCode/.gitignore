@@ -1,0 +1,15 @@
+Debug/
+Release/
+*.lkf
+*.elf
+*.map
+*.s19
+*.sm8
+*.ls
+*.o
+*.idea
+# Keep only C sources, headers, README,
+!.gitignore
+!*.c
+!*.h
+!.README.md

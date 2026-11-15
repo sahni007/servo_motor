@@ -113,6 +113,20 @@ static uint16_t last_blink_ticks = 0;
 static uint32_t blink_elapsed_ticks = 0;
 static uint16_t last_fault_check_ticks = 0;
 
+/**
+ * @brief   Captures servo pulse widths on Port A edges.
+ *
+ * @details Reads PA1 and PA2 when either pin changes. Rising edges save the
+ *          TIM1 count; falling edges calculate the HIGH duration and publish
+ *          widths no longer than TIMEOUT_TICKS to the main loop.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 @far @interrupt void EXTI_PORTA_IRQHandler(void)
 {
     uint8_t pins;
@@ -171,13 +185,40 @@ static uint16_t last_fault_check_ticks = 0;
     capture_seq++;
 }
 
-/* Kept because the project's existing vector table names this handler.
- * TIM4 is not started and no timer interrupt is used for pulse capture.
+/**
+ * @brief   Provides the existing TIM4 interrupt-vector handler.
+ *
+ * @details TIM4 is not initialized or used. Servo pulse timing is performed
+ *          using Port A GPIO interrupts and the free-running TIM1 counter.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
  */
 @far @interrupt void TIM4_UPD_OVF_IRQHandler(void)
 {
 }
 
+/**
+ * @brief   Gets the latest measured servo pulses and validity states.
+ *
+ * @details Copies a consistent snapshot of values published by the Port A
+ *          interrupt. A pulse is valid only if a measurement has been captured
+ *          and its timestamp is within PULSE_STALE_TICKS of the current time.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   pulse1  Output for servo input 1 pulse width in microseconds.
+ * @param   pulse2  Output for servo input 2 pulse width in microseconds.
+ * @param   valid1  Output set to nonzero if servo input 1 is recent.
+ * @param   valid2  Output set to nonzero if servo input 2 is recent.
+ *
+ * @return  None.
+ */
 static void get_servo_pulses(uint16_t *pulse1, uint16_t *pulse2,
                              uint8_t *valid1, uint8_t *valid2)
 {
@@ -214,6 +255,22 @@ static void get_servo_pulses(uint16_t *pulse1, uint16_t *pulse2,
     *pulse2 = *valid2 ? captured_pulse2 : 0;
 }
 
+/**
+ * @brief   Converts a servo pulse width to direction and motor speed.
+ *
+ * @details Rejects pulse widths outside the configured valid range. Valid
+ *          widths above or below the neutral deadband map to a direction and
+ *          speed from 0 to 255; neutral widths produce a stopped command.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   pulse      Pulse width in microseconds.
+ * @param   direction  Output direction: 1 forward, -1 reverse, 0 stop.
+ * @param   speed      Output motor speed from 0 to 255.
+ *
+ * @return  uint8_t 1 if the pulse is valid, otherwise 0.
+ */
 static uint8_t decode_servo(uint16_t pulse, int8_t *direction, uint8_t *speed)
 {
     uint32_t scaled;
@@ -246,6 +303,20 @@ static uint8_t decode_servo(uint16_t pulse, int8_t *direction, uint8_t *speed)
     return true;
 }
 
+/**
+ * @brief   Sets a motor PWM channel's duty cycle.
+ *
+ * @details Scales the 8-bit input value to the configured TIM2 period, then
+ *          writes the compare register for channel 1 or channel 3.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   channel  TIM2 channel selector: 1 for channel 1, otherwise channel 3.
+ * @param   value    PWM command from 0 to 255.
+ *
+ * @return  None.
+ */
 static void set_pwm(uint8_t channel, uint8_t value)
 {
     uint16_t compare;
@@ -263,6 +334,22 @@ static void set_pwm(uint8_t channel, uint8_t value)
     }
 }
 
+/**
+ * @brief   Applies direction and speed commands to one motor.
+ *
+ * @details Sets the motor direction GPIO and selects the corresponding PWM
+ *          duty. A zero direction clears the direction pin and sets PWM to 0.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   direction_mask  GPIOC bit mask for the motor direction pin.
+ * @param   pwm_channel     TIM2 PWM channel used by the motor.
+ * @param   direction       Direction: 1 forward, -1 reverse, 0 stop.
+ * @param   speed           Motor speed from 0 to 255.
+ *
+ * @return  None.
+ */
 static void drive_motor(uint8_t direction_mask, uint8_t pwm_channel,
                         int8_t direction, uint8_t speed)
 {
@@ -283,6 +370,20 @@ static void drive_motor(uint8_t direction_mask, uint8_t pwm_channel,
     }
 }
 
+/**
+ * @brief   Reads one ADC input channel.
+ *
+ * @details Selects the channel, starts a conversion, waits for the ADC
+ *          completion flag, and combines the result registers into a 10-bit
+ *          sample.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   channel  ADC channel number to convert.
+ *
+ * @return  uint16_t ADC sample in the range 0 to 1023.
+ */
 static uint16_t analog_read(uint8_t channel)
 {
     uint8_t high;
@@ -299,6 +400,20 @@ static uint16_t analog_read(uint8_t channel)
     return ((uint16_t)(high & 0x03) << 8) | low;
 }
 
+/**
+ * @brief   Checks configured current and voltage limits.
+ *
+ * @details Reads the enabled current-sense channels and optionally the voltage
+ *          sense channel. A current reading above IS_FAULT_COUNTS or a voltage
+ *          outside the configured limits reports a fault.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  uint8_t 1 if a configured threshold is exceeded, otherwise 0.
+ */
 static uint8_t check_fault(void)
 {
     uint16_t value;
@@ -334,6 +449,20 @@ static uint8_t check_fault(void)
     return false;
 }
 
+/**
+ * @brief   Updates the status LED blink pattern.
+ *
+ * @details Accumulates elapsed TIM1 ticks and toggles the LED after the
+ *          normal or fault interval. This uses the free-running timer without
+ *          a timer interrupt.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void update_led(void)
 {
     uint16_t now_ticks;
@@ -353,11 +482,37 @@ static void update_led(void)
     }
 }
 
+/**
+ * @brief   Configures the MCU clock.
+ *
+ * @details Selects the 16 MHz HSI clock with no additional CPU clock
+ *          prescaling.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void clock_init(void)
 {
     CLK_CKDIVR = 0x00;                   /* HSI clock at 16 MHz */
 }
 
+/**
+ * @brief   Configures GPIO pins used by the firmware.
+ *
+ * @details Initializes motor and LED outputs, PA1/PA2 servo interrupt inputs,
+ *          TIM2 PWM output pins, and analog inputs used by fault checks.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void gpio_init(void)
 {
     GPIOC_ODR &= (uint8_t)~(DRIVER_ENABLE | MOTOR1_A_MASK |
@@ -389,6 +544,19 @@ static void gpio_init(void)
     GPIOD_CR2 &= (uint8_t)~0x6C;
 }
 
+/**
+ * @brief   Configures Port A external interrupt edge sensitivity.
+ *
+ * @details Enables rising-and-falling edge interrupts for Port A and records
+ *          the initial PA1/PA2 states so subsequent edges can be identified.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void exti_init(void)
 {
     EXTI_SetExtIntSensitivity(EXTI_PORT_GPIOA, EXTI_SENSITIVITY_RISE_FALL);
@@ -398,6 +566,20 @@ static void exti_init(void)
     servo2_was_high = (GPIOA_IDR & SERVO2_MASK) != 0;
 }
 
+/**
+ * @brief   Configures TIM1 pulse timing and TIM2 motor PWM.
+ *
+ * @details Starts TIM1 as a free-running counter with 8-us ticks for GPIO edge
+ *          timestamps, then configures TIM2 channels 1 and 3 for motor PWM.
+ *          No timer interrupt is enabled.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void timer_init(void)
 {
     /* Free-running TIM1 counter: 16 MHz / 128 = 125 kHz, 8 us/tick.
@@ -425,6 +607,19 @@ static void timer_init(void)
     TIM2_CR1 = 0x81;
 }
 
+/**
+ * @brief   Initializes ADC1 for analog sensing.
+ *
+ * @details Sets right-aligned conversion results, selects the ADC clock,
+ *          powers up the converter, and waits briefly for stabilization.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  None.
+ */
 static void adc_init(void)
 {
     uint16_t delay;
@@ -439,6 +634,20 @@ static void adc_init(void)
     }
 }
 
+/**
+ * @brief   Initializes hardware and runs the motor-control loop.
+ *
+ * @details Initializes the clock and peripherals, enables interrupts, then
+ *          repeatedly reads servo measurements, decodes motor commands,
+ *          checks faults, drives both motors, and updates the status LED.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-15
+ *
+ * @param   None.
+ *
+ * @return  int 0 if the main loop exits; normally this function runs forever.
+ */
 int main(void)
 {
     uint16_t pulse1;
