@@ -18,6 +18,8 @@ struct interrupt_vector {
 }
 
 extern void _stext();     /* startup routine */
+extern @far @interrupt void EXTI_PORTA_IRQHandler(void);
+extern @far @interrupt void TIM4_UPD_OVF_IRQHandler(void);
 
 struct interrupt_vector const _vectab[] = {
 	{0x82, (interrupt_handler_t)_stext}, /* reset */
@@ -25,7 +27,7 @@ struct interrupt_vector const _vectab[] = {
 	{0x82, NonHandledInterrupt}, /* irq0  */
 	{0x82, NonHandledInterrupt}, /* irq1  */
 	{0x82, NonHandledInterrupt}, /* irq2  */
-	{0x82, NonHandledInterrupt}, /* irq3  */
+	{0x82, EXTI_PORTA_IRQHandler}, /* irq3: EXTI port A */
 	{0x82, NonHandledInterrupt}, /* irq4  */
 	{0x82, NonHandledInterrupt}, /* irq5  */
 	{0x82, NonHandledInterrupt}, /* irq6  */
@@ -45,7 +47,7 @@ struct interrupt_vector const _vectab[] = {
 	{0x82, NonHandledInterrupt}, /* irq20 */
 	{0x82, NonHandledInterrupt}, /* irq21 */
 	{0x82, NonHandledInterrupt}, /* irq22 */
-	{0x82, NonHandledInterrupt}, /* irq23 */
+	{0x82, TIM4_UPD_OVF_IRQHandler}, /* irq23: TIM4 update/overflow */
 	{0x82, NonHandledInterrupt}, /* irq24 */
 	{0x82, NonHandledInterrupt}, /* irq25 */
 	{0x82, NonHandledInterrupt}, /* irq26 */
