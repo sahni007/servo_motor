@@ -12,6 +12,19 @@
 static uint16_t last_blink_ticks = 0;
 static uint32_t blink_elapsed_ticks = 0;
 
+/*******************************************************************************
+ * @brief   Updates the status LED using the current fault state.
+ *
+ * @details Accumulates elapsed TIM1 ticks and toggles PC5 at the normal or
+ *          fault blink interval without using a timer interrupt.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   fault_active  Nonzero selects the faster fault blink interval.
+ *
+ * @return  None.
+ ******************************************************************************/
 void StatusLed_Update(uint8_t fault_active)
 {
     uint16_t now_ticks;

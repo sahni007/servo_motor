@@ -33,6 +33,20 @@ static uint8_t servo2_capturing = 0;
 static uint16_t servo1_rise_ticks = 0;
 static uint16_t servo2_rise_ticks = 0;
 
+/*******************************************************************************
+ * @brief   Captures servo pulse widths on Port A pin transitions.
+ *
+ * @details Records rising-edge timestamps and computes pulse widths on falling
+ *          edges using TIM1. Completed measurements are published atomically
+ *          for the foreground code through the sequence counter.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 @far @interrupt void EXTI_PORTA_IRQHandler(void)
 {
     uint8_t pins;
@@ -91,10 +105,39 @@ static uint16_t servo2_rise_ticks = 0;
     capture_seq++;
 }
 
+/*******************************************************************************
+ * @brief   Provides the unused TIM4 update interrupt handler.
+ *
+ * @details TIM4 is not initialized by this firmware; the vector table retains
+ *          this empty handler for its existing interrupt-vector entry.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 @far @interrupt void TIM4_UPD_OVF_IRQHandler(void)
 {
 }
 
+/*******************************************************************************
+ * @brief   Reads a consistent snapshot of the latest servo measurements.
+ *
+ * @details Retries if the interrupt updates data during the copy, then marks
+ *          each input valid only while its capture timestamp is recent.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   pulse1  Output pulse width for servo input 1, in microseconds.
+ * @param   pulse2  Output pulse width for servo input 2, in microseconds.
+ * @param   valid1  Output nonzero if servo input 1 has a recent measurement.
+ * @param   valid2  Output nonzero if servo input 2 has a recent measurement.
+ *
+ * @return  None.
+ ******************************************************************************/
 static void get_pulses(uint16_t *pulse1, uint16_t *pulse2,
                        uint8_t *valid1, uint8_t *valid2)
 {
@@ -131,6 +174,21 @@ static void get_pulses(uint16_t *pulse1, uint16_t *pulse2,
     *pulse2 = *valid2 ? captured_pulse2 : 0;
 }
 
+/*******************************************************************************
+ * @brief   Converts one servo pulse width to direction and speed.
+ *
+ * @details Rejects widths outside the configured valid range, maps values
+ *          outside the neutral deadband to direction and speed, and leaves
+ *          valid neutral pulses stopped.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   pulse    Pulse width to decode, in microseconds.
+ * @param   command  Output motor command fields direction and speed.
+ *
+ * @return  uint8_t 1 if the pulse is within the valid range, otherwise 0.
+ ******************************************************************************/
 static uint8_t decode_pulse(uint16_t pulse, MotorCommand *command)
 {
     uint32_t scaled;
@@ -163,6 +221,19 @@ static uint8_t decode_pulse(uint16_t pulse, MotorCommand *command)
     return 1;
 }
 
+/*******************************************************************************
+ * @brief   Configures edge-triggered interrupts for servo inputs.
+ *
+ * @details Selects rising-and-falling Port A edge sensitivity and records the
+ *          current PA1 and PA2 states so only subsequent edges are processed.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 void ServoInput_Init(void)
 {
     EXTI_SetExtIntSensitivity(EXTI_PORT_GPIOA, EXTI_SENSITIVITY_RISE_FALL);
@@ -170,6 +241,20 @@ void ServoInput_Init(void)
     servo2_was_high = (GPIOA_IDR & SERVO2_MASK) != 0;
 }
 
+/*******************************************************************************
+ * @brief   Reads and decodes both servo inputs into motor commands.
+ *
+ * @details Gets the latest pulse measurements, validates their freshness, and
+ *          stores validity, direction, and speed in the output commands.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   command1  Output motor command for servo input 1.
+ * @param   command2  Output motor command for servo input 2.
+ *
+ * @return  None.
+ ******************************************************************************/
 void ServoInput_Read(MotorCommand *command1, MotorCommand *command2)
 {
     uint16_t pulse1;

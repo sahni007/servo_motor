@@ -7,6 +7,19 @@
 #include "servo_input.h"
 #include "status_led.h"
 
+/*******************************************************************************
+ * @brief   Initializes firmware modules and runs the motor-control loop.
+ *
+ * @details Initializes the board, servo inputs, motor PWM, and fault monitor,
+ *          enables interrupts, then continuously updates motor and LED state.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  int Does not return during normal operation.
+ ******************************************************************************/
 int main(void)
 {
     MotorCommand command1;

@@ -25,6 +25,19 @@ static uint8_t bad_count = 0;
 static uint8_t fault_active = 0;
 static uint16_t last_fault_check_ticks = 0;
 
+/*******************************************************************************
+ * @brief   Reads one ADC channel and returns its 10-bit conversion value.
+ *
+ * @details Selects the requested ADC1 channel, starts conversion, waits for
+ *          the end-of-conversion flag, then combines the result registers.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   channel  ADC1 input channel number to sample.
+ *
+ * @return  uint16_t ADC sample in the range 0 to 1023.
+ ******************************************************************************/
 static uint16_t analog_read(uint8_t channel)
 {
     uint8_t high;
@@ -41,6 +54,20 @@ static uint16_t analog_read(uint8_t channel)
     return ((uint16_t)(high & 0x03) << 8) | low;
 }
 
+/*******************************************************************************
+ * @brief   Checks configured current and voltage limits.
+ *
+ * @details Reads enabled current-sense channels and optionally converts the
+ *          voltage-sense sample to millivolts before checking configured
+ *          limits.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  uint8_t 1 if a configured threshold is exceeded, otherwise 0.
+ ******************************************************************************/
 static uint8_t check_fault(void)
 {
     uint16_t value;
@@ -76,6 +103,19 @@ static uint8_t check_fault(void)
     return 0;
 }
 
+/*******************************************************************************
+ * @brief   Initializes ADC1 for analog fault monitoring.
+ *
+ * @details Configures right-aligned ADC results and the ADC clock, powers up
+ *          the converter, and waits briefly for stabilization.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 void FaultMonitor_Init(void)
 {
     uint16_t delay;
@@ -90,6 +130,20 @@ void FaultMonitor_Init(void)
     }
 }
 
+/*******************************************************************************
+ * @brief   Checks for faults at the configured periodic interval.
+ *
+ * @details Samples configured inputs every 20 ms, requires three consecutive
+ *          fault readings to activate the fault state, and clears it after a
+ *          non-fault reading.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  uint8_t Nonzero when the confirmed fault state is active.
+ ******************************************************************************/
 uint8_t FaultMonitor_Update(void)
 {
     uint16_t now_ticks;

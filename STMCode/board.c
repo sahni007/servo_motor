@@ -27,11 +27,36 @@
 #define MOTOR2_A_MASK 0x80
 #define LED_MASK      0x20
 
+/*******************************************************************************
+ * @brief   Selects the undivided 16 MHz HSI clock.
+ *
+ * @details Clears the CPU and peripheral clock prescalers in CLK_CKDIVR.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 static void clock_init(void)
 {
     CLK_CKDIVR = 0x00;
 }
 
+/*******************************************************************************
+ * @brief   Configures GPIO pins used by the firmware.
+ *
+ * @details Sets motor control and LED pins as outputs, servo pins as
+ *          interrupt inputs, PWM pins as outputs, and sense pins as inputs.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 static void gpio_init(void)
 {
     GPIOC_ODR &= (uint8_t)~(DRIVER_ENABLE | MOTOR1_A_MASK |
@@ -60,6 +85,19 @@ static void gpio_init(void)
     GPIOD_CR2 &= (uint8_t)~0x6C;
 }
 
+/*******************************************************************************
+ * @brief   Initializes the system clock, GPIO, and TIM1 timebase.
+ *
+ * @details Configures TIM1 with a 128:1 prescaler for an 8-microsecond
+ *          counter tick used to timestamp servo pulses and elapsed time.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 void Board_Init(void)
 {
     clock_init();

@@ -9,6 +9,19 @@ struct interrupt_vector {
 	interrupt_handler_t interrupt_handler;
 };
 
+/*******************************************************************************
+ * @brief   Handles interrupts without a dedicated application handler.
+ *
+ * @details Returns immediately; a breakpoint can be placed here to detect
+ *          unexpected interrupts during development.
+ *
+ * @author  STMicroelectronics
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 @far @interrupt void NonHandledInterrupt (void)
 {
 	/* in order to detect unexpected events during development, 

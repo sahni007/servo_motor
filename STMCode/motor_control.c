@@ -24,6 +24,20 @@
 
 #define PWM_PERIOD_COUNTS 1000U
 
+/*******************************************************************************
+ * @brief   Writes an 8-bit duty command to a TIM2 PWM channel.
+ *
+ * @details Scales the command to the configured period and writes the compare
+ *          register for channel 1 or channel 3.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   channel  TIM2 channel number: 1 selects channel 1; otherwise 3.
+ * @param   value    PWM duty command from 0 to 255.
+ *
+ * @return  None.
+ ******************************************************************************/
 static void set_pwm(uint8_t channel, uint8_t value)
 {
     uint16_t compare;
@@ -41,6 +55,22 @@ static void set_pwm(uint8_t channel, uint8_t value)
     }
 }
 
+/*******************************************************************************
+ * @brief   Applies direction and PWM duty to one motor.
+ *
+ * @details Sets the direction GPIO and updates its PWM channel. A zero
+ *          direction clears the direction pin and sets duty to zero.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   direction_mask  GPIOC bit mask for the motor direction output.
+ * @param   pwm_channel     TIM2 PWM channel used by the motor.
+ * @param   direction       Direction: 1 forward, -1 reverse, 0 stopped.
+ * @param   speed           PWM speed command from 0 to 255.
+ *
+ * @return  None.
+ ******************************************************************************/
 static void drive_motor(uint8_t direction_mask, uint8_t pwm_channel,
                         int8_t direction, uint8_t speed)
 {
@@ -61,6 +91,19 @@ static void drive_motor(uint8_t direction_mask, uint8_t pwm_channel,
     }
 }
 
+/*******************************************************************************
+ * @brief   Configures TIM2 channels 1 and 3 for motor PWM.
+ *
+ * @details Sets a 1000-count PWM period, initializes both compare registers
+ *          to zero, enables PWM outputs, and starts the timer.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   None.
+ *
+ * @return  None.
+ ******************************************************************************/
 void MotorControl_Init(void)
 {
     TIM2_CR1 = 0x00;
@@ -81,6 +124,20 @@ void MotorControl_Init(void)
     TIM2_CR1 = 0x81;
 }
 
+/*******************************************************************************
+ * @brief   Applies both motor commands and updates driver enable.
+ *
+ * @details Drives each motor using its direction and speed, then enables the
+ *          driver while at least one servo command is valid.
+ *
+ * @author  Varun Sahni
+ * @date    2026-11-17
+ *
+ * @param   command1  Motor command for motor 1.
+ * @param   command2  Motor command for motor 2.
+ *
+ * @return  None.
+ ******************************************************************************/
 void MotorControl_Apply(const MotorCommand *command1,
                         const MotorCommand *command2)
 {
