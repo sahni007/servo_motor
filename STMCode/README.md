@@ -31,16 +31,23 @@ powering the motors.
 
 ## How the code works
 
-### 1. Initialization
+### Modules
 
-`main()` initializes the HSI clock, GPIO pins, TIM1/TIM2, and ADC1, then sets
-Port A to trigger an interrupt on both rising and falling edges. Finally, it
-enables CPU interrupts and enters the control loop.
+- `main.c` initializes the modules and runs the control loop.
+- `board.c` configures the clock, GPIO pins, and TIM1 pulse-measurement timer.
+- `servo_input.c` captures and decodes servo pulses; its interrupt handler is
+  connected through `stm8_interrupt_vector.c`.
+- `motor_control.c` configures TIM2 PWM and drives both motors.
+- `fault_monitor.c` reads the enabled analog inputs and tracks confirmed faults.
+- `status_led.c` updates the normal/fault LED blink pattern.
 
-TIM1 runs freely at 125 kHz (one count every 8 microseconds). It does not use a
-timer interrupt. TIM2 generates motor PWM on channels 1 and 3.
+`motor_command.h` defines the command passed from servo decoding to motor
+control. `app_config.h` contains the application-wide `FAULT_SHUTDOWN` option.
+TIM1 runs at 125 kHz (8-microsecond ticks) for pulse capture and elapsed time;
+TIM2 generates 16 kHz motor PWM. The control behavior and pin assignments are
+unchanged.
 
-### 2. Servo pulse measurement
+### Servo pulse measurement
 
 Both servo inputs share the Port A external interrupt. The
 `EXTI_PORTA_IRQHandler()` interrupt handler reads the state of PA1 and PA2 and
@@ -55,41 +62,60 @@ compares it with the previously observed state:
 The timer is only the time reference between GPIO edges; the GPIO interrupt is
 what detects and records those edges.
 
-### 3. Reading and decoding input values
+### Reading and decoding input values
 
-`get_servo_pulses()` copies a consistent snapshot of both measurements. The
+`ServoInput_Read()` copies a consistent snapshot of both measurements. The
 `capture_seq` counter prevents the main loop from seeing data while the
 interrupt is updating it. A measurement is considered recent for up to 30 ms;
-an input with no recent pulse is returned as invalid with a width of zero.
+an input with no recent pulse is returned as invalid.
 
-`decode_servo()` rejects widths outside 800–2200 microseconds. Widths above
+Pulse widths outside 800–2200 microseconds are rejected. Widths above
 1550 microseconds command forward motion, widths below 1450 microseconds
 command reverse motion, and widths in the 100-microsecond neutral deadband
 command a stop. Speed is scaled to 0–255.
 
-### 4. Driving motors
+### Driving motors
 
-For each channel, `drive_motor()` sets the direction GPIO and calls `set_pwm()`
-to update the matching TIM2 compare register. The driver enable pin is high
+`motor_control.c` sets motor direction and PWM. The driver enable pin is high
 while either servo input is valid and low when neither input is valid.
 
-### 5. Fault checks and LED
+### Fault checks and LED
 
-Every 20 ms, the main loop calls `check_fault()`, which reads the enabled ADC
-current-sense channels and optionally the voltage-sense input. A fault becomes
-active after three consecutive fault checks. With `FAULT_SHUTDOWN` set to `1`,
-an active fault also stops both motors and disables the drivers. It is `0` by
-default.
+`fault_monitor.c` checks enabled ADC channels every 20 ms. A fault becomes
+active after three consecutive fault checks. With `FAULT_SHUTDOWN` set to `1`
+in `app_config.h`, an active fault also stops both motors and disables the
+drivers; it is `0` by default.
 
-`update_led()` uses elapsed TIM1 counts to toggle the status LED without
-requiring a timer interrupt. The configured intervals are 1000 ms for normal
-status and 100 ms while a fault is active.
+`status_led.c` uses elapsed TIM1 counts to toggle the LED without a timer
+interrupt (1000 ms normal, 100 ms fault).
 
 ## Build setup
 
 Configure STVD to use the Cosmic STM8 compiler and add the STM8S Standard
-Peripheral Library `inc` directory to the compiler include paths. The source
-uses these library headers:
+Peripheral Library `inc` directory to the compiler include paths. Add these
+application source files to the STVD project (the project file is not included
+in this repository):
+
+- `main.c`
+- `board.c`
+- `servo_input.c`
+- `motor_control.c`
+- `fault_monitor.c`
+- `status_led.c`
+- `stm8_interrupt_vector.c`
+
+The application headers should be in the project directory or on the compiler
+include path:
+
+- `app_config.h`
+- `board.h`
+- `fault_monitor.h`
+- `motor_command.h`
+- `motor_control.h`
+- `servo_input.h`
+- `status_led.h`
+
+The application uses these library headers:
 
 - `stm8s.h`
 - `stm8s_gpio.h`
@@ -107,17 +133,15 @@ the STM8S003F3 and Cosmic toolchain.
 
 ## Interrupt vector configuration
 
-The existing `stm8_interrupt_vector.c` maps Port A external interrupt IRQ3 to
-`EXTI_PORTA_IRQHandler()`. Keep this mapping enabled. The existing TIM4 vector
-may remain in the vector table, but TIM4 is not initialized or used by this
-firmware.
+The existing `stm8_interrupt_vector.c` maps Port A external interrupt IRQ3 to the handler in
+`servo_input.c`. Keep this mapping enabled. The TIM4 vector maps to an empty
+handler in `servo_input.c`; TIM4 is not initialized or used.
 
 ## Configuration and safety notes
 
-- `ENABLE_IS4_CHECK` enables the fourth current-sense channel.
-- `ENABLE_VSENSE_CHECK` is disabled by default; enable it only after confirming
-  that the voltage divider is safe for the MCU input.
-- `IS_FAULT_COUNTS` must be calibrated for the board's current-sense circuit.
+- `ENABLE_IS4_CHECK`, `ENABLE_VSENSE_CHECK`, `IS_FAULT_COUNTS`, and voltage
+  limits are configured in `fault_monitor.c`. Enable voltage sensing only
+  after confirming that the voltage divider is safe for the MCU input.
 - `FAULT_SHUTDOWN` is disabled by default to avoid uncalibrated readings
   unexpectedly stopping the motors.
 - Test signal polarity, timer frequency, PWM polarity, analog channel mapping,
